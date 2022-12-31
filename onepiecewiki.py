@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup as bs
 import json
+import pandas as pd
 
 data=dict()
 url_base = "https://onepiece.fandom.com/wiki/Chapter_"
@@ -37,7 +38,9 @@ def clean(elem):
 			elem[key] = clean(elem[key])
 
 try:
-	for chapter in range(1,10):#1070):
+	# for chapter in range(800,801):#1070):
+	# for chapter in range(7,0,-1):
+	for chapter in range(4,5):
 		print(chapter)
 		d=dict()
 		url = url_base+str(chapter)
@@ -82,40 +85,121 @@ try:
 
 		# character groups (pirates, marines, civilians, etc.)
 		groups = [elem.text.strip() for elem in table.find_all('tr')[0].find_all('th')]
-		
-		# get number of subgroups per group
-		colspans = [int(elem['colspan']) if elem.has_attr('colspan') else 1 for elem in table.find_all('tr')[0].find_all('th')]
 
-		# Necessary because some subgroup titles don't have <a> tags and it messes with my code :(
-		subgrouptitles = [cell.find('dl').find('dt').text for cell in table.find_all('tr')[1].find_all('td') if cell.find('dl') is not None]
+		# Each group can have subgroups (e.g., straw hats within pirates, captains within marines)
+		# sub_titles = [cell for cell in table.find_all('tr')[1].find_all('td') if cell.find('dl')]
+		sub_titles = [cell if cell.find('dl') else '' for cell in table.find_all('tr')[1].find_all('td')]
 		# subgroups: first elem is subgroup title, subsequent elements are character names
+		# exeption being when there are multiple subgroups in one column (handled later)
 		subgroups = [[elem.text for elem in cell.find_all('a')] for cell in table.find_all('tr')[1].find_all('td')]
+		temp1 = [subelem.find('dt') if subelem.find('dt') is not None else subelem.find('li') for cell in table.find_all('tr')[1].find_all('td') for subelem in cell.find_all(['dl','ul'])]
+		temp2 = [subelem for cell in table.find_all('tr')[1].find_all('td') for subelem in cell.find_all(['dl','ul'])]
+		for i in range(len(temp1)):
+			print(temp1[i], temp2[i], None if temp1[i] is None else temp1[i].text, '\n', sep='\n\n')
+		assert False
+		subgrouptitles = [subelem.find('dt').text for cell in table.find_all('tr')[1].find_all('td') if cell.find('dl') is not None for subelem in cell.find_all('dl')]
+
+		
+		# some groups have multiple columns, and some columns have multiple subgroups
+		colspans = [int(elem['colspan']) if elem.has_attr('colspan') else 1 for elem in table.find_all('tr')[0].find_all('th')]
+		rowspans = [len(cell.find_all('hr'))+1 if type(cell)!=str else 1 for cell in sub_titles] # <hr> is a row break
+		
 		print(groups)
 		print(subgroups)
 		print(colspans)
+		print(rowspans)
 		print(subgrouptitles)
+		print('\n\n')
+		# print(sub_titles)
 
+		# parse table into json format
 		sg_ix = 0
 		sgtitle_ix = 0
+		# for each main group (has column header)
 		for i, group in enumerate(groups):
+			# get number of subcolumns
 			num = colspans[i]
 			if num>1:
+				# if more than one column, loop through each subcolumn
 				newgroup = dict()
 				while num>0:
 					num-=1
+					rowspan = rowspans[sg_ix]
 					subgroup = subgroups[sg_ix]
-					if subgroup[0]==subgrouptitles[sgtitle_ix]:
-						newgroup[subgroup[0]] = subgroup[1:]
+
+					# if there are multiple subgroups in the column, then loop through the names.
+					# otherwise, put the whole subgroup into newgroup
+					if rowspan==1:
+						if sgtitle_ix < len(subgrouptitles) and subgroup[0] == subgrouptitles[sgtitle_ix]:
+							newgroup[subgrouptitles[sgtitle_ix]] = subgroup[1:]
+						else:
+							newgroup[subgrouptitles[sgtitle_ix]] = subgroup
+						sgtitle_ix+=1
+					else:
+						start=0
+						for j in range(rowspan):
+							# for each subrow in the subcolumn, extract all information
+							sgtitle = subgrouptitles[sgtitle_ix]
+
+							# figure out which elements are in the subgroup
+							if j==rowspan-1:
+								end = len(subgroup) # go to end of list
+							else:
+								end = subgroup.index(subgrouptitles[sgtitle_ix+1]) # get index where next subgroup starts
+							newgroup[subgrouptitles[sgtitle_ix]] = subgroup[start+1:end]
+							start = end
+							sgtitle_ix+=1
+					sg_ix+=1
+					
+			else:
+				# new logic:
+				newgroup = dict()
+				rowspan = rowspans[sg_ix]
+				subgroup = subgroups[sg_ix]
+				print(rowspan, subgroup, sg_ix, sgtitle_ix)
+
+				# if there are multiple subgroups in the column, then loop through the names.
+				# otherwise, put the whole subgroup into newgroup
+				if rowspan==1:
+					if sgtitle_ix < len(subgrouptitles) and subgroup[0] == subgrouptitles[sgtitle_ix]:
+						newgroup[subgrouptitles[sgtitle_ix]] = subgroup[1:]
 					else:
 						newgroup[subgrouptitles[sgtitle_ix]] = subgroup
-					sg_ix+=1
 					sgtitle_ix+=1
-			else:
-				newgroup = subgroups[sg_ix]
+				else:
+					start=0
+					for j in range(rowspan):
+						# for each subrow in the subcolumn, extract all information
+						sgtitle = subgrouptitles[sgtitle_ix]
+
+						# figure out which elements are in the subgroup
+						if j==rowspan-1:
+							end = len(subgroup) # go to end of list
+						elif subgrouptitles[sgtitle_ix+1] in subgroup:
+							end = subgroup.index(subgrouptitles[sgtitle_ix+1]) # get index where next subgroup starts
+						else:
+							# subgroup that didn't have an <a> html tag so I have no idea where it ends
+							# temp solution: categorize everything else as "other"
+							# TODO
+							newgroup['Others'] = subgroup[start+1:]
+							sgtitle_ix+=2
+							break
+						newgroup[subgrouptitles[sgtitle_ix]] = subgroup[start+1:end]
+						start = end
+						sgtitle_ix+=1
 				sg_ix+=1
+				
+				# old logic:
+				# subgroup = subgroups[sg_ix]
+				# if sgtitle_ix < len(subgrouptitles) and subgroup[0] == subgrouptitles[sgtitle_ix]:
+				# 	newgroup = {subgroup[0]: subgroup[1:]}
+				# 	# sgtitle_ix+=1
+				# else:
+				# 	newgroup = subgroup
+				# sg_ix+=1
 			charmap[group] = newgroup
 
-		# print(charmap)
+		print(charmap)
 
 		d['Characters']= charmap
 
@@ -125,5 +209,5 @@ except KeyboardInterrupt as e:
 	pass
 
 
-# with open('chapters.json', 'w') as f:
-# 	json.dump(data, f, indent=4)
+with open('test.json', 'w') as f:
+	json.dump(data, f, indent=4)
